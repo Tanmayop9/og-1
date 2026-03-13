@@ -6,10 +6,17 @@ import aiofiles
 import random
 import datetime
 import psutil
-import os 
+import os
+import logging
 from typing import List, Dict, Set
 import threading
-from Leveragers import log
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 MAINIDD = 1413352398922973235
 WLCMID = 1479676935683575963
@@ -30,7 +37,7 @@ class FloodBot(commands.Bot):
 
     async def setup_hook(self):
         self.secure_users = await self.load_secure_users()
-        log.inf(f"Bot {self.user.id} Ready!")
+        logger.info(f"Bot {self.user.id} Ready!")
 
     async def load_secure_users(self) -> Set[int]:
         try:
@@ -70,7 +77,7 @@ class BotManager:
         except (discord.errors.LoginFailure, discord.errors.HTTPException):
             return False
         except Exception as e:
-            log.err(f"Unknown error validating token: {str(e)}")
+            logger.error(f"Unknown error validating token: {str(e)}")
             return False
 
     async def load_tokens(self) -> bool:
@@ -79,7 +86,7 @@ class BotManager:
                 tokens = await f.readlines()
             tokens = [token.strip() for token in tokens if token.strip()]
             
-            log.inf(f"Found {len(tokens)} tokens, validating...")
+            logger.info(f"Found {len(tokens)} tokens, validating...")
             
             tasks = [self.validate_token(token) for token in tokens]
             validation_results = await asyncio.gather(*tasks)
@@ -87,25 +94,25 @@ class BotManager:
             for token, is_valid in zip(tokens, validation_results):
                 if is_valid:
                     self.valid_tokens.append(token)
-                    log.inf(f"Token valid: {token[:20]}...")
+                    logger.info(f"Token valid: {token[:20]}...")
                 else:
                     self.invalid_tokens.append(token)
-                    log.inf(f"Token invalid: {token[:20]}...")
+                    logger.info(f"Token invalid: {token[:20]}...")
 
-            log.inf(f"\nValidation complete:")
-            log.inf(f"Valid tokens: {len(self.valid_tokens)}")
-            log.inf(f"Invalid tokens: {len(self.invalid_tokens)}")
+            logger.info(f"\nValidation complete:")
+            logger.info(f"Valid tokens: {len(self.valid_tokens)}")
+            logger.info(f"Invalid tokens: {len(self.invalid_tokens)}")
             
             if self.invalid_tokens:
                 async with aiofiles.open('invalid_tokens.txt', 'w') as f:
                     await f.write('\n'.join(self.invalid_tokens))
-                log.inf("Invalid tokens have been saved to 'invalid_tokens.txt'")
+                logger.info("Invalid tokens have been saved to 'invalid_tokens.txt'")
                 
         except FileNotFoundError:
-            log.err("tokens.txt not found!")
+            logger.error("tokens.txt not found!")
             return False
         except Exception as e:
-            log.err(f"Error loading tokens: {str(e)}")
+            logger.error(f"Error loading tokens: {str(e)}")
             return False
             
         return bool(self.valid_tokens)
@@ -114,15 +121,15 @@ class BotManager:
         bot.remove_command("help")
         @bot.event
         async def on_ready():
-            log.inf(f"Bot {bot.user.id} Online!")
+            logger.info(f"Bot {bot.user.id} Online!")
             activity = discord.Game(name="Flooding DMs | .secure to protect | /programmer")  
             await bot.change_presence(activity=activity)
             if bot.user.id == MAINIDD:
                 try:
                     bot.load_extension("jishaku")
-                    log.inf("jishaku extension loaded.")
+                    logger.info("jishaku extension loaded.")
                 except Exception as e:
-                    log.err(f"Failed to load jishaku: {str(e)}")
+                    logger.error(f"Failed to load jishaku: {str(e)}")
 
         @bot.event
         async def on_member_join(member):
@@ -136,9 +143,9 @@ class BotManager:
                 role = discord.utils.get(member.guild.roles, id=1482030924714610860)  
                 if role:
                     await member.add_roles(role)  
-                    log.inf(f"Assigned role {role.name} to {member.id}")
+                    logger.info(f"Assigned role {role.name} to {member.id}")
                 else:
-                    log.err("Role with ID 1482030924714610860 not found.")
+                    logger.error("Role with ID 1482030924714610860 not found.")
 
         @bot.command(name="stats")
         async def stats(ctx):
@@ -275,12 +282,128 @@ class BotManager:
             
             help_embed.add_field(name=".secure", value="Secures you from DM flooding.", inline=False)
             help_embed.add_field(name=".unsecure", value="Unsecures yourself or another user (only for owners).", inline=False)
+            help_embed.add_field(name=".flood @user (reason)", value="Floods the target user's DMs with the given reason.", inline=False)
             help_embed.add_field(name=".stats", value="Shows bot statistics like active bots and secured users.", inline=False)
             
 
             await ctx.send(embed=help_embed)
 
 
+
+        @bot.command(name="flood")
+        async def flood_command(ctx, user: discord.User = None, *, reason: str = "No reason provided"):
+            if bot.user.id != MAINIDD:
+                return
+
+            if user is None:
+                embed = discord.Embed(
+                    description="Usage: `.flood @user (reason)`",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            try:
+                with open("secure.json", "r") as file:
+                    secure_users = json.load(file)
+            except FileNotFoundError:
+                secure_users = []
+
+            if user.id in secure_users:
+                embed = discord.Embed(
+                    description=f"{user.mention} is secured. You can't flood their DMs!",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            if user.bot:
+                embed = discord.Embed(
+                    description="Cannot flood bot accounts!",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            self.start_time = datetime.datetime.now()
+            self.total_dms = 0
+
+            embed = discord.Embed(
+                title="Starting DM Flood",
+                description=f"Target: {user.mention}\nReason: {reason}\nTotal Bots: {len(self.bots)}",
+                color=discord.Color.blue()
+            )
+            status_msg = await ctx.send(embed=embed)
+
+            flood_message = discord.Embed(
+                description=(
+                    f"> You've been flooded by `{ctx.author.name}`!\n"
+                    f"> Reason: `{reason}`\n"
+                    f"> Want to avoid floods? Join our server and use .secure\n"
+                ),
+                color=discord.Color.blue()
+            )
+
+            flood_complete = False
+
+            async def update_status():
+                nonlocal flood_complete
+                while not flood_complete:
+                    duration = (datetime.datetime.now() - self.start_time).total_seconds()
+                    dms_per_second = self.total_dms / duration if duration > 0 else 0
+                    status_embed = discord.Embed(
+                        title="Flood Status",
+                        description=(
+                            f"Target `:` {user.mention}\n"
+                            f"Reason `:` `{reason}`\n"
+                            f"Total DMs Sent `:` `{self.total_dms}`\n"
+                            f"DMs per Second `:` `{dms_per_second:.2f}`\n"
+                            f"Duration `:` `{duration:.1f}s`\n"
+                            f"Active Bots `:` `{len(self.bots)}`"
+                        ),
+                        color=discord.Color.blue()
+                    )
+                    await asyncio.sleep(3)
+                    await status_msg.edit(embed=status_embed)
+
+                duration = (datetime.datetime.now() - self.start_time).total_seconds()
+                dms_per_second = self.total_dms / duration if duration > 0 else 0
+                final_embed = discord.Embed(
+                    title="Flood Completed",
+                    description=(
+                        f"Successfully sent `{self.total_dms}` DMs to {user.mention}.\n"
+                        f"Duration: `{duration:.1f}s`\n"
+                        f"DMs per Second: `{dms_per_second:.2f}`\n"
+                        f"Reason: `{reason}`"
+                    ),
+                    color=discord.Color.green()
+                )
+                await status_msg.edit(embed=final_embed)
+
+            async def send_dms():
+                nonlocal flood_complete
+                try:
+                    dm_count = 0
+                    max_dms = 99
+                    while dm_count < max_dms:
+                        try:
+                            await user.send(embed=flood_message)
+                            await bot.increment_dm_count()
+                            self.total_dms += 1
+                            dm_count += 1
+                        except discord.Forbidden:
+                            break
+                        except Exception as e:
+                            logger.error(f"DM Error: {str(e)}")
+                            break
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"DM Thread Error: {str(e)}")
+                finally:
+                    flood_complete = True
+
+            asyncio.create_task(update_status())
+            asyncio.create_task(send_dms())
 
         @bot.event
         async def on_message(message):
@@ -401,11 +524,11 @@ class BotManager:
                             except discord.Forbidden:
                                 break
                             except Exception as e:
-                                log.err(f"DM Error: {str(e)}")
+                                logger.error(f"DM Error: {str(e)}")
                                 break
                             await asyncio.sleep(0.5)
                     except Exception as e:
-                        log.err(f"DM Thread Error: {str(e)}")
+                        logger.error(f"DM Thread Error: {str(e)}")
                     finally:
                         flood_complete = True
 
@@ -415,7 +538,7 @@ class BotManager:
                 asyncio.create_task(send_dms())
 
             except Exception as e:
-                log.err(f"Message processing error: {str(e)}")
+                logger.error(f"Message processing error: {str(e)}")
 
             await bot.process_commands(message)
 
@@ -430,7 +553,7 @@ class BotManager:
             if isinstance(error, commands.CommandOnCooldown):
                 embed = discord.Embed(description=f"Cooldown! Try again in {error.retry_after:.2f}s")
                 await ctx.send(embed=embed)
-                log.ratelimit(f"Rate-limited: {error.retry_after:.2f}s cooldown.")
+                logger.warning(f"Rate-limited: {error.retry_after:.2f}s cooldown.")
 
     async def start_bot(self, token: str) -> bool:
         try:
@@ -442,15 +565,15 @@ class BotManager:
             await bot.start(token)
             return True
         except Exception as e:
-            log.err(f"Failed to start bot: {str(e)}")
+            logger.error(f"Failed to start bot: {str(e)}")
             return False
 
     async def start_all_bots(self):
         if not self.valid_tokens:
-            log.err("No valid tokens available!")
+            logger.error("No valid tokens available!")
             return
 
-        log.inf("\nStarting bots...")
+        logger.info("\nStarting bots...")
         tasks = []
         for token in self.valid_tokens:
             task = asyncio.create_task(self.start_bot(token))
@@ -472,18 +595,18 @@ async def main():
         if await manager.load_tokens():
             await manager.start_all_bots()
         else:
-            log.err("Failed to load any valid tokens. Exiting...")
+            logger.error("Failed to load any valid tokens. Exiting...")
     except KeyboardInterrupt:
-        log.inf("\nShutting down bots...")
+        logger.info("\nShutting down bots...")
         await manager.cleanup()
     except Exception as e:
-        log.crit(f"Fatal error: {str(e)}")
+        logger.critical(f"Fatal error: {str(e)}")
         await manager.cleanup()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log.inf("\nBot shutdown complete")
+        logger.info("\nBot shutdown complete")
     except Exception as e:
-        log.crit(f"Fatal error: {str(e)}")
+        logger.critical(f"Fatal error: {str(e)}")
