@@ -126,7 +126,7 @@ class BotManager:
             await bot.change_presence(activity=activity)
             if bot.user.id == MAINIDD:
                 try:
-                    bot.load_extension("jishaku")
+                    await bot.load_extension("jishaku")
                     logger.info("jishaku extension loaded.")
                 except Exception as e:
                     logger.error(f"Failed to load jishaku: {str(e)}")
@@ -344,11 +344,12 @@ class BotManager:
                 color=discord.Color.blue()
             )
 
-            flood_complete = False
+            flood_done_event = asyncio.Event()
+            flood_tasks_done = 0
+            total_flood_bots = len(self.bots)
 
             async def update_status():
-                nonlocal flood_complete
-                while not flood_complete:
+                while not flood_done_event.is_set():
                     duration = (datetime.datetime.now() - self.start_time).total_seconds()
                     dms_per_second = self.total_dms / duration if duration > 0 else 0
                     status_embed = discord.Embed(
@@ -380,15 +381,16 @@ class BotManager:
                 )
                 await status_msg.edit(embed=final_embed)
 
-            async def send_dms():
-                nonlocal flood_complete
+            async def send_dms_from_bot(flood_bot):
+                nonlocal flood_tasks_done
                 try:
+                    target_user = await flood_bot.fetch_user(user.id)
                     dm_count = 0
                     max_dms = 99
                     while dm_count < max_dms:
                         try:
-                            await user.send(embed=flood_message)
-                            await bot.increment_dm_count()
+                            await target_user.send(embed=flood_message)
+                            await flood_bot.increment_dm_count()
                             self.total_dms += 1
                             dm_count += 1
                         except discord.Forbidden:
@@ -400,10 +402,13 @@ class BotManager:
                 except Exception as e:
                     logger.error(f"DM Thread Error: {str(e)}")
                 finally:
-                    flood_complete = True
+                    flood_tasks_done += 1
+                    if flood_tasks_done >= total_flood_bots:
+                        flood_done_event.set()
 
             asyncio.create_task(update_status())
-            asyncio.create_task(send_dms())
+            for flood_bot in self.bots:
+                asyncio.create_task(send_dms_from_bot(flood_bot))
 
         @bot.event
         async def on_message(message):
@@ -412,6 +417,11 @@ class BotManager:
                 return
 
             if message.author.bot:
+                return
+
+            # If the message is a command (starts with prefix), process it normally
+            if message.content.startswith('.'):
+                await bot.process_commands(message)
                 return
 
             try:
